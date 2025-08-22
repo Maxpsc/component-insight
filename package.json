@@ -1,0 +1,69 @@
+{
+  "name": "component-insight",
+  "version": "1.0.0",
+  "description": "AI-powered frontend component library analyzer",
+  "packageManager": "pnpm@8.15.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "bin": {
+    "insight": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "insight.config.example.ts"
+  ],
+  "scripts": {
+    "build": "vite build && tsc --emitDeclarationOnly --outDir dist",
+    "dev": "vite-node src/cli.ts",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "vitest",
+    "demo": "tsx example.ts"
+  },
+  "keywords": [
+    "component",
+    "analysis",
+    "ai",
+    "frontend",
+    "library"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.28.3",
+    "@babel/traverse": "^7.28.3",
+    "@babel/types": "^7.28.2",
+    "@langchain/core": "0.3.59",
+    "@langchain/openai": "0.5.10",
+    "@typescript-eslint/parser": "^6.12.0",
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "fs-extra": "^11.1.1",
+    "glob": "^10.3.10",
+    "langchain": "^0.3.19",
+    "ora": "^7.0.1",
+    "simple-git": "^3.20.0",
+    "typescript": "^5.3.2"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.10.0",
+    "@vitest/ui": "^1.0.4",
+    "tsx": "^4.7.0",
+    "vite": "^5.0.0",
+    "vite-node": "^1.0.0",
+    "vitest": "^1.0.4"
+  },
+  "type": "module"
+}

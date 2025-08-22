@@ -1,0 +1,10 @@
+# pnpm workspace配置
+# 目前是单包项目，但为未来扩展做准备
+
+packages:
+  # 包含根目录
+  - '.'
+  
+  # 如果将来有子包，可以添加：
+  # - 'packages/*'
+  # - 'examples/*'
