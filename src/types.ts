@@ -8,6 +8,8 @@ export interface ComponentProperty {
   description: string;
   /** 数据类型 */
   type: string;
+  /** 类型参考，通常说明继承自三方组件库的类型 */
+  typeDesc?: string;
   /** 默认值 */
   defaultValue?: string;
   /** 枚举值 */

@@ -61,7 +61,6 @@ export class ComponentAnalyzer {
       // 3. 扫描和解析组件文件
       console.log(chalk.yellow('\n步骤 3/5: 扫描组件文件'));
       const componentFiles = await this.scanComponents(projectDir);
-
       // 4. 使用AI分析组件
       console.log(chalk.yellow('\n步骤 4/5: AI分析组件'));
       const components = await this.analyzeComponents(componentFiles);
@@ -329,7 +328,6 @@ export class ComponentAnalyzer {
     try {
       const indexContent = await fs.readFile(indexPath, 'utf-8');
       const componentInfoMap = await this.extractComponentInfoFromIndex(indexContent, indexPath, allFiles);
-      
       if (componentInfoMap.size === 0) {
         console.log(chalk.yellow('index.ts 中未找到符合条件的组件导出，回退到传统识别模式'));
         return this.fallbackToTraditionalIdentification(allFiles);
@@ -370,7 +368,8 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * 深度追踪组件的真实实现位置并收集依赖文件
+   * 根据入口文件filePath，和组件变量名componentName，
+   * 深度追踪组件的代码实现文件并收集所有和组件实现相关的依赖文件
    */
   private async traceComponentImplementation(
     componentName: string, 
@@ -431,11 +430,30 @@ export class ComponentAnalyzer {
         });
 
         let foundImplementation = false;
-        let nextTraceTarget: { name: string; path: string } | null = null;
+        const reExportTargets: { name: string; path: string }[] = []; // 收集所有可能的重新导出
         let defaultAsTarget: FileInfo | null = null; // 用于处理 default as 的情况
+        const importMap = new Map<string, string>(); // 记录 import 语句：变量名 -> 文件路径
 
         // 遍历 AST 查找组件实现或重新导出
         traverse(ast, {
+          // 收集 import 语句信息
+          ImportDeclaration: (path: any) => {
+            const node = path.node;
+            if (t.isStringLiteral(node.source)) {
+              const importPath = this.resolveFilePath(node.source.value, currentFilePath, allFiles);
+              if (importPath) {
+                for (const specifier of node.specifiers) {
+                  if (t.isImportSpecifier(specifier) && t.isIdentifier(specifier.local)) {
+                    // import { ComponentName } from './module'
+                    importMap.set(specifier.local.name, importPath);
+                  } else if (t.isImportDefaultSpecifier(specifier) && t.isIdentifier(specifier.local)) {
+                    // import ComponentName from './module'
+                    importMap.set(specifier.local.name, importPath);
+                  }
+                }
+              }
+            }
+          },
           // 检查是否有组件的实际实现
           FunctionDeclaration: (path: any) => {
             const node = path.node;
@@ -470,6 +488,7 @@ export class ComponentAnalyzer {
           ExportNamedDeclaration: (path: any) => {
             const node = path.node;
             
+            // 处理 export { A, B } from './module' 形式的重新导出
             if (node.specifiers && node.source && t.isStringLiteral(node.source)) {
               for (const specifier of node.specifiers) {
                 if (t.isExportSpecifier(specifier)) {
@@ -506,7 +525,7 @@ export class ComponentAnalyzer {
                         }
                       } else {
                         console.log(chalk.cyan(`  ${'  '.repeat(depth)}→ 重新导出: ${currentComponentName} 来自 ${node.source.value}`));
-                        nextTraceTarget = { name: localName, path: targetPath } as { name: string; path: string };
+                        reExportTargets.push({ name: localName, path: targetPath });
                       }
                     }
                   }
@@ -523,7 +542,7 @@ export class ComponentAnalyzer {
               const targetPath = this.resolveFilePath(node.source.value, currentFilePath, allFiles);
               if (targetPath) {
                 console.log(chalk.cyan(`  ${'  '.repeat(depth)}→ 可能的重新导出: ${currentComponentName} 来自 ${node.source.value}`));
-                nextTraceTarget = { name: currentComponentName, path: targetPath } as { name: string; path: string };
+                reExportTargets.push({ name: currentComponentName, path: targetPath });
               }
             }
           },
@@ -533,8 +552,15 @@ export class ComponentAnalyzer {
             const node = path.node;
             
             if (t.isIdentifier(node.declaration) && node.declaration.name === currentComponentName) {
-              console.log(chalk.green(`  ${'  '.repeat(depth)}✓ 找到默认导出实现: ${currentComponentName}`));
-              foundImplementation = true;
+              // 检查这个组件是否是从其他文件导入的
+              const importPath = importMap.get(currentComponentName);
+              if (importPath) {
+                console.log(chalk.cyan(`  ${'  '.repeat(depth)}→ 默认导出的组件来自导入: ${currentComponentName} 来自 ${importPath}`));
+                reExportTargets.push({ name: currentComponentName, path: importPath });
+              } else {
+                console.log(chalk.green(`  ${'  '.repeat(depth)}✓ 找到默认导出实现: ${currentComponentName}`));
+                foundImplementation = true;
+              }
             } else if (t.isFunctionDeclaration(node.declaration) && 
                       node.declaration.id && 
                       node.declaration.id.name === currentComponentName) {
@@ -544,24 +570,31 @@ export class ComponentAnalyzer {
           }
         });
 
-        // 如果找到实现，返回对应的文件
+        // 优先追踪重新导出，找到真正的实现文件
+        if (reExportTargets.length > 0) {
+          for (const target of reExportTargets) {
+            console.log(chalk.cyan(`  ${'  '.repeat(depth)}尝试追踪重新导出目标: ${target.name} -> ${target.path}`));
+            const result = await traceImplementation(target.name, target.path, depth + 1);
+            if (result) {
+              // 找到实现，返回结果
+              return result;
+            }
+          }
+        }
+
+        // 如果重新导出追踪失败，检查当前文件是否有实现
         if (foundImplementation) {
           // 优先返回 default as 的目标文件
           if (defaultAsTarget) {
             return defaultAsTarget;
           }
+          console.log(chalk.green(`  ${'  '.repeat(depth)}✓ 在当前文件找到实现: ${currentComponentName}`));
           return currentFile;
         }
 
-        // 如果有重新导出，继续追踪
-        if (nextTraceTarget) {
-          const target = nextTraceTarget as { name: string; path: string };
-          return await traceImplementation(target.name, target.path, depth + 1);
-        }
-
-        // 没有找到实现或重新导出，返回当前文件作为最终结果
-        console.log(chalk.yellow(`  ${'  '.repeat(depth)}⚠ 未找到明确实现，使用当前文件: ${currentComponentName}`));
-        return currentFile;
+        // 没有找到实现或重新导出，返回null表示未找到
+        console.log(chalk.yellow(`  ${'  '.repeat(depth)}⚠ 未找到组件实现: ${currentComponentName}`));
+        return null;
 
       } catch (error) {
         console.log(chalk.yellow(`  ${'  '.repeat(depth)}解析文件失败 ${currentFilePath}: ${error instanceof Error ? error.message : String(error)}`));
@@ -572,9 +605,12 @@ export class ComponentAnalyzer {
     const implementationFile = await traceImplementation(componentName, filePath);
     
     if (implementationFile) {
+      // 从文件中提取特定组件的代码片段
+      const componentCode = this.extractComponentCodeFromFile(componentName, implementationFile.content);
+      
       return {
         name: componentName,
-        code: implementationFile.content,
+        code: componentCode || implementationFile.content, // 如果提取失败，使用整个文件内容
         path: implementationFile.path,
         file: implementationFile,
         dependencies: Array.from(dependencies)
@@ -582,6 +618,83 @@ export class ComponentAnalyzer {
     }
 
     return null;
+  }
+
+  /**
+   * 从文件内容中提取特定组件的代码片段
+   */
+  private extractComponentCodeFromFile(componentName: string, fileContent: string): string | null {
+    try {
+      const ast = parse(fileContent, {
+        sourceType: 'module',
+        plugins: [
+          'typescript',
+          'jsx',
+          'decorators-legacy',
+          'classProperties',
+          'objectRestSpread',
+          'asyncGenerators',
+          'functionBind',
+          'exportDefaultFrom',
+          'exportNamespaceFrom',
+          'dynamicImport'
+        ]
+      });
+
+      let componentCode: string | null = null;
+      const lines = fileContent.split('\n');
+
+      traverse(ast, {
+        // 查找函数声明：export function ComponentName() {}
+        FunctionDeclaration: (path: any) => {
+          const node = path.node;
+          if (node.id && node.id.name === componentName) {
+            const start = node.loc?.start.line || 1;
+            const end = node.loc?.end.line || lines.length;
+            componentCode = lines.slice(start - 1, end).join('\n');
+          }
+        },
+
+        // 查找变量声明：export const ComponentName = () => {}
+        VariableDeclarator: (path: any) => {
+          const node = path.node;
+          if (t.isIdentifier(node.id) && node.id.name === componentName) {
+            if (t.isFunctionExpression(node.init) || t.isArrowFunctionExpression(node.init)) {
+              const start = path.parent.loc?.start.line || 1;
+              const end = path.parent.loc?.end.line || lines.length;
+              componentCode = lines.slice(start - 1, end).join('\n');
+            }
+          }
+        },
+
+        // 查找类声明：export class ComponentName extends Component {}
+        ClassDeclaration: (path: any) => {
+          const node = path.node;
+          if (node.id && node.id.name === componentName) {
+            const start = node.loc?.start.line || 1;
+            const end = node.loc?.end.line || lines.length;
+            componentCode = lines.slice(start - 1, end).join('\n');
+          }
+        },
+
+        // 查找默认导出：export default function ComponentName() {}
+        ExportDefaultDeclaration: (path: any) => {
+          const node = path.node;
+          if (t.isFunctionDeclaration(node.declaration) && 
+              node.declaration.id && 
+              node.declaration.id.name === componentName) {
+            const start = node.loc?.start.line || 1;
+            const end = node.loc?.end.line || lines.length;
+            componentCode = lines.slice(start - 1, end).join('\n');
+          }
+        }
+      });
+
+      return componentCode;
+    } catch (error) {
+      console.log(chalk.yellow(`提取组件代码失败: ${error instanceof Error ? error.message : String(error)}`));
+      return null;
+    }
   }
 
   /**
